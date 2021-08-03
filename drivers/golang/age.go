@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"strings"
 )
 
 func GetReady(db *sql.DB, graphName string) (bool, error) {
@@ -63,6 +64,29 @@ func QueryCypher(tx *sql.Tx, graphName string, cypher string, args ...interface{
 		return nil, err
 	} else {
 		return NewCypherCursor(rows), nil
+	}
+}
+
+func QueryCypherMultiColumn(tx *sql.Tx, graphName string, cypher string, args ...interface{}) (cursor *CypherCursor, returnArgs []string, outErr error) {
+	cypherStmt := fmt.Sprintf(cypher, args...)
+	var agTypeSlice []string
+
+	returnIndex := strings.LastIndex(strings.ToLower(cypherStmt), "return")
+	postReturnIndex := returnIndex + 7
+	returnArgs = strings.Split(cypherStmt[postReturnIndex:], ",")
+	for i, _ := range returnArgs {
+		agTypeSlice = append(agTypeSlice, fmt.Sprintf("v%d agtype", i))
+	}
+	agTypes := strings.Join(agTypeSlice, ",")
+
+	stmt := fmt.Sprintf("SELECT * from cypher('%s', $$ %s $$) as (%s);", graphName, cypherStmt, agTypes)
+	rows, err := tx.Query(stmt)
+	if err != nil {
+		outErr = err
+		return
+	} else {
+		cursor = NewCypherCursor(rows)
+		return
 	}
 }
 
@@ -244,6 +268,28 @@ func (c *CypherCursor) GetRow() (Entity, error) {
 		return nil, fmt.Errorf("CypherCursor.GetRow:: %s", err)
 	}
 	return c.unmarshaler.unmarshal(gstr)
+}
+
+func (c *CypherCursor) GetRowWithMultipleColumns(columnNames []string) (map[string]Entity, error) {
+	var gstrs []interface{}
+	for i := 0; i < len(columnNames); i++ {
+		var s string
+		gstrs = append(gstrs, &s)
+	}
+	err := c.rows.Scan(gstrs...)
+	if err != nil {
+		return nil, fmt.Errorf("CypherCursor.GetRowWithMultipleColumns1:: %s", err)
+	}
+	entities := make(map[string]Entity)
+	for i, gstr := range gstrs {
+		gstrs := gstr.(*string)
+		entity, err := c.unmarshaler.unmarshal(*gstrs)
+		if err != nil {
+			return nil, fmt.Errorf("CypherCursor.GetRowWithMultipleColumns2:: %s", err)
+		}
+		entities[columnNames[i]] = entity
+	}
+	return entities, nil
 }
 
 func (c *CypherCursor) Close() error {
